@@ -36,6 +36,7 @@ class GenerateSpec extends Specification { def is = s2"""
     warn about missing schema versions (addition) $e6
     warn about missing 1-0-0 schema version $e7
     correctly setup table ownership $e8
+    test $e9
   """
 
   def e1 = {
@@ -286,6 +287,8 @@ class GenerateSpec extends Specification { def is = s2"""
     val input = SelfDescribingSchema.parse(sourceSchema).getOrElse(throw new RuntimeException("Invalid self-describing JSON schema"))
     val output = Generate.transformVanilla(false, "atomic", 128, false, true, None)(NonEmptyList.of(input))
     val expected = Generate.DdlOutput(List(textFile(Paths.get("com.amazon.aws.lambda/java_context_1.sql"), resultContent)), Nil, Nil, Nil)
+
+    println(output)
 
     output must beEqualTo(expected)
   }
@@ -669,5 +672,98 @@ class GenerateSpec extends Specification { def is = s2"""
     )
 
     ddl must beEqualTo(expected)
+  }
+
+  def e9 = {
+    val inputSchema = parse(
+      """
+        |{
+        |	"$schema":"http://iglucentral.com/schemas/com.snowplowanalytics.self-desc/schema/jsonschema/1-0-0#",
+        |	"description":"Schema for an AWS Lambda Java context object, http://docs.aws.amazon.com/lambda/latest/dg/java-context-object.html",
+        |	"self":{
+        |		"vendor":"com.amazon.aws.lambda",
+        |		"name":"java_context",
+        |		"version":"1-0-0",
+        |		"format":"jsonschema"
+        |	},
+        |          "type": "object",
+        |          "properties": {
+        |            "foo": {
+        |              "type": "string"
+        |            },
+        |            "bar": {
+        |              "type": "integer",
+        |              "maximum": 4000
+        |            }
+        |          },
+        |	"additionalProperties":false
+        |}
+      """.stripMargin)
+
+    val inputSchema2 = parse(
+      """
+        |{
+        |	"$schema":"http://iglucentral.com/schemas/com.snowplowanalytics.self-desc/schema/jsonschema/1-0-0#",
+        |	"description":"Schema for an AWS Lambda Java context object, http://docs.aws.amazon.com/lambda/latest/dg/java-context-object.html",
+        |	"self":{
+        |		"vendor":"com.amazon.aws.lambda",
+        |		"name":"java_context",
+        |		"version":"1-0-1",
+        |		"format":"jsonschema"
+        |	},
+        |          "type": "object",
+        |          "properties": {
+        |            "foo": {
+        |              "type": "string",
+        |              "maxLength": 20
+        |            },
+        |            "a_field": {
+        |              "type": "object",
+        |              "properties": {
+        |                "b_field": {
+        |                  "type": "string"
+        |                },
+        |                "d_field": {
+        |                  "type": "object"
+        |                }
+        |              },
+        |              "required": ["d_field"]
+        |            }
+        |           },
+        | "required": ["a_field"],
+        |	"additionalProperties":false
+        |}
+      """.stripMargin)
+
+    val expectedDdl =
+      """|CREATE SCHEMA IF NOT EXISTS atomic;
+        |
+        |CREATE TABLE IF NOT EXISTS atomic.com_amazon_aws_lambda_java_context_1 (
+        |    "schema_vendor"   VARCHAR(128)  ENCODE ZSTD NOT NULL,
+        |    "schema_name"     VARCHAR(128)  ENCODE ZSTD NOT NULL,
+        |    "schema_format"   VARCHAR(128)  ENCODE ZSTD NOT NULL,
+        |    "schema_version"  VARCHAR(128)  ENCODE ZSTD NOT NULL,
+        |    "root_id"         CHAR(36)      ENCODE RAW  NOT NULL,
+        |    "root_tstamp"     TIMESTAMP     ENCODE ZSTD NOT NULL,
+        |    "ref_root"        VARCHAR(255)  ENCODE ZSTD NOT NULL,
+        |    "ref_tree"        VARCHAR(1500) ENCODE ZSTD NOT NULL,
+        |    "ref_parent"      VARCHAR(255)  ENCODE ZSTD NOT NULL,
+        |    "foo"             VARCHAR(20)   ENCODE ZSTD,
+        |    "a_field.b_field" VARCHAR(4096) ENCODE ZSTD,
+        |    "a_field.d_field" VARCHAR(4096) ENCODE ZSTD NOT NULL,
+        |    FOREIGN KEY (root_id) REFERENCES atomic.events(event_id)
+        |)
+        |DISTSTYLE KEY
+        |DISTKEY (root_id)
+        |SORTKEY (root_tstamp);
+        |
+        |COMMENT ON TABLE atomic.com_amazon_aws_lambda_java_context_1 IS 'iglu:com.amazon.aws.lambda/java_context/jsonschema/1-0-1';""".stripMargin
+
+    val input = SelfDescribingSchema.parse(inputSchema).getOrElse(throw new RuntimeException("Invalid self-describing JSON schema"))
+    val input2 = SelfDescribingSchema.parse(inputSchema2).getOrElse(throw new RuntimeException("Invalid self-describing JSON schema"))
+    val output = Generate.transformSnowplow(false, "atomic", 4096, false, true, None)(NonEmptyList.of(input, input2))
+    val expected = Generate.DdlOutput(List(textFile(Paths.get("com.amazon.aws.lambda/java_context_1.sql"), expectedDdl)), Nil, Nil, Nil)
+
+    output.ddls must beEqualTo(expected.ddls)
   }
 }
